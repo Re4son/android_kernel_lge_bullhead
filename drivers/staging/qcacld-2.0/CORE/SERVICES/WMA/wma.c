@@ -855,6 +855,11 @@ static void wma_lost_link_info_handler(tp_wma_handle wma, uint32_t vdev_id,
 	struct sir_lost_link_info *lost_link_info;
 	VOS_STATUS vos_status;
 	vos_msg_t sme_msg = {0};
+	if (vdev_id >= wma->max_bssid) {
+		WMA_LOGE("%s: received invalid vdev_id %d",
+			 __func__, vdev_id);
+		return;
+	}
 	/* report lost link information only for STA mode */
 	if (wma->interfaces[vdev_id].vdev_up &&
 	    (WMI_VDEV_TYPE_STA == wma->interfaces[vdev_id].type) &&
@@ -4369,7 +4374,8 @@ static int wma_passpoint_match_event_handler(void *handle,
 	struct wifi_passpoint_match  *dest_match;
 	tSirWifiScanResult      *dest_ap;
 	uint8_t *buf_ptr;
-
+	uint32_t buf_len = 0;
+	bool excess_data = false;
 	tpAniSirGlobal pMac = (tpAniSirGlobal )vos_get_context(
 					VOS_MODULE_ID_PE, wma->vos_context);
 	if (!pMac) {
@@ -4388,14 +4394,28 @@ static int wma_passpoint_match_event_handler(void *handle,
 	event = param_buf->fixed_param;
 	buf_ptr = (uint8_t *)param_buf->fixed_param;
 
-	/*
-	 * All the below lengths are UINT32 and summing up and checking
-	 * against a constant should not be an issue.
-	 */
-	if ((sizeof(*event) + event->ie_length + event->anqp_length) >
-			WMA_SVC_MSG_MAX_SIZE) {
-		WMA_LOGE("IE Length: %d or ANQP Length: %d is huge",
-				event->ie_length, event->anqp_length);
+	do {
+		if (event->ie_length > (WMA_SVC_MSG_MAX_SIZE)) {
+			excess_data = true;
+			break;
+		} else {
+			buf_len = event->ie_length;
+		}
+
+		if (event->anqp_length > (WMA_SVC_MSG_MAX_SIZE)) {
+			excess_data = true;
+			break;
+		} else {
+			buf_len += event->anqp_length;
+		}
+	} while (0);
+
+	if (excess_data || buf_len > (WMA_SVC_MSG_MAX_SIZE - sizeof(*event)) ||
+	    buf_len > (WMA_SVC_MSG_MAX_SIZE - sizeof(*dest_match)) ||
+	    (event->ie_length + event->anqp_length) > param_buf->num_bufp) {
+		WMA_LOGE("IE Length: %d or ANQP Length: %d is huge, num_bufp %d",
+			 event->ie_length, event->anqp_length,
+			 param_buf->num_bufp);
 		return -EINVAL;
 	}
 	if (event->ssid.ssid_len > SIR_MAC_MAX_SSID_LENGTH) {
@@ -4403,8 +4423,7 @@ static int wma_passpoint_match_event_handler(void *handle,
 			__func__, event->ssid.ssid_len);
 		event->ssid.ssid_len = SIR_MAC_MAX_SSID_LENGTH;
 	}
-	dest_match = vos_mem_malloc(sizeof(*dest_match) +
-				event->ie_length + event->anqp_length);
+	dest_match = vos_mem_malloc(sizeof(*dest_match) + buf_len);
 	if (!dest_match) {
 		WMA_LOGE("%s: vos_mem_malloc failed", __func__);
 		return -EINVAL;
@@ -31528,6 +31547,11 @@ static int wma_apfind_evt_handler(void *handle, u_int8_t *event,
 		/* FW had the tlv_header len calculated into the data_len */
 		buf = &param_buf->data[WMI_MAX_SSID_LEN + IEEE80211_ADDR_LEN];
 		vdev_id = *(u_int32_t*) buf;
+		if (vdev_id >= wma->max_bssid) {
+			WMA_LOGE("%s: received invalid vdev_id %d",
+				 __func__, vdev_id);
+			return -EINVAL;
+		}
 
 		/* to trigger AP re-connection after QRF wakeup*/
 		WMA_LOGA("%s, trigger AP re-connection at QRF wakeup (APFIND_WAKEUP_EVENT), vdev_id=%d, SSID=%s",
